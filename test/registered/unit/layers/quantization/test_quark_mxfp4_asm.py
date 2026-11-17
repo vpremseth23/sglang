@@ -5,6 +5,8 @@ from sglang.test.ci.ci_register import register_amd_ci, register_cpu_ci
 register_cpu_ci(est_time=5, suite="base-a-test-cpu")
 register_amd_ci(est_time=5, stage="stage-b", runner_config="1-gpu-small-amd")
 
+import importlib
+import sys
 import unittest
 from unittest import mock
 
@@ -118,6 +120,42 @@ class TestQuarkMxfp4AsmNarrowLayer(CustomTestCase):
 
         self.assertFalse(layer.use_aiter_asm_fp4_gemm)
         self.assertIs(layer.weight, weight)
+
+
+class TestQuarkMxfp4LazyAiterImport(CustomTestCase):
+    def test_module_imports_without_aiter_mxfp4_kernels(self):
+        """Importing the scheme on ROCm must not need AITER's MXFP4 kernels:
+        every ROCm model imports this module, and older AITER builds lack them."""
+        blocked = {
+            name: None
+            for name in (
+                "aiter.ops.triton.gemm",
+                "aiter.ops.triton.gemm.fused",
+                "aiter.ops.triton.gemm.fused.fused_gemm_afp4wfp4_split_cat",
+                "aiter.ops.triton.gemm_afp4wfp4",
+                "aiter.ops.triton.gemm_afp4wfp4_pre_quant_atomic",
+            )
+        }
+        try:
+            with (
+                mock.patch.dict(sys.modules, blocked),
+                mock.patch("sglang.srt.utils.is_hip", return_value=True),
+                mock.patch(
+                    "sglang.srt.utils.custom_op.direct_register_custom_op"
+                ) as register,
+            ):
+                module = importlib.reload(quark_w4a4_mxfp4)
+                self.assertTrue(module._is_hip)
+                self.assertTrue(register.called)
+                module._aiter_mxfp4_op.cache_clear()
+                with self.assertRaisesRegex(
+                    ImportError, "aiter.ops.triton.gemm_afp4wfp4.gemm_afp4wfp4"
+                ):
+                    module._aiter_mxfp4_op(
+                        "aiter.ops.triton.gemm_afp4wfp4", "gemm_afp4wfp4"
+                    )
+        finally:
+            importlib.reload(quark_w4a4_mxfp4)
 
 
 @unittest.skipUnless(is_hip(), "needs a ROCm build with aiter")

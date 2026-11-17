@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import functools
+import importlib
 import logging
 import threading
 from typing import Any, Callable, Optional
@@ -161,18 +163,25 @@ def _dequant_mxfp4_to_bf16(
     return w.to(torch.bfloat16)
 
 
+@functools.cache
+def _aiter_mxfp4_op(module: str, name: str) -> Callable:
+    # Resolved on first use, not at import: this module is imported for every
+    # model on ROCm, and older or partial AITER installs may lack these kernels.
+    try:
+        return getattr(importlib.import_module(module), name)
+    except (ImportError, AttributeError) as e:
+        raise ImportError(
+            f"Quark MXFP4 on ROCm requires `{module}.{name}` from AITER, which the "
+            "installed AITER does not provide. Install an AITER build that ships "
+            "the MXFP4 kernels."
+        ) from e
+
+
+def _dynamic_mxfp4_quant_orig(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    return _aiter_mxfp4_op("aiter.ops.triton.quant", "dynamic_mxfp4_quant")(x)
+
+
 if _is_hip:
-    from aiter import gemm_a4w4 as _gemm_a4w4_orig
-    from aiter import per_1x32_f4_quant_hip as _per_1x32_f4_quant_hip_orig
-    from aiter.ops.shuffle import shuffle_weight
-    from aiter.ops.triton.gemm.fused.fused_gemm_afp4wfp4_split_cat import (
-        fused_gemm_afp4wfp4_split_cat as _fused_gemm_afp4wfp4_split_cat_orig,
-    )
-    from aiter.ops.triton.gemm_afp4wfp4 import gemm_afp4wfp4 as _gemm_afp4wfp4_orig
-    from aiter.ops.triton.gemm_afp4wfp4_pre_quant_atomic import (
-        gemm_afp4wfp4_pre_quant as _gemm_afp4wfp4_pre_quant_orig,
-    )
-    from aiter.ops.triton.quant import dynamic_mxfp4_quant as _dynamic_mxfp4_quant_orig
 
     def _aiter_gemm_afp4wfp4(
         x: torch.Tensor,
@@ -181,7 +190,9 @@ if _is_hip:
         w_scales: torch.Tensor,
         y: torch.Tensor,
     ) -> None:
-        _gemm_afp4wfp4_orig(x, w, x_scales, w_scales, y.dtype, y)
+        _aiter_mxfp4_op("aiter.ops.triton.gemm_afp4wfp4", "gemm_afp4wfp4")(
+            x, w, x_scales, w_scales, y.dtype, y
+        )
 
     def _aiter_gemm_afp4wfp4_fake(
         x: torch.Tensor,
@@ -208,7 +219,9 @@ if _is_hip:
         w_scales: torch.Tensor,
         y: torch.Tensor,
     ) -> None:
-        _gemm_afp4wfp4_pre_quant_orig(x, w, w_scales, y.dtype, y)
+        _aiter_mxfp4_op(
+            "aiter.ops.triton.gemm_afp4wfp4_pre_quant_atomic", "gemm_afp4wfp4_pre_quant"
+        )(x, w, w_scales, y.dtype, y)
 
     def _aiter_gemm_afp4wfp4_pre_quant_fake(
         x: torch.Tensor,
@@ -257,7 +270,7 @@ if _is_hip:
     def _aiter_per_1x32_f4_quant(
         x: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return _per_1x32_f4_quant_hip_orig(x, shuffle=True)
+        return _aiter_mxfp4_op("aiter", "per_1x32_f4_quant_hip")(x, shuffle=True)
 
     def _aiter_per_1x32_f4_quant_fake(
         x: torch.Tensor,
@@ -286,7 +299,7 @@ if _is_hip:
         w_scales: torch.Tensor,
         output_dtype_ref: torch.Tensor,
     ) -> torch.Tensor:
-        return _gemm_a4w4_orig(
+        return _aiter_mxfp4_op("aiter", "gemm_a4w4")(
             x,
             w.view(x.dtype),
             x_scales,
@@ -330,7 +343,10 @@ if _is_hip:
         S1: int,
         S2: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return _fused_gemm_afp4wfp4_split_cat_orig(
+        return _aiter_mxfp4_op(
+            "aiter.ops.triton.gemm.fused.fused_gemm_afp4wfp4_split_cat",
+            "fused_gemm_afp4wfp4_split_cat",
+        )(
             x=x,
             w=w,
             y=y,
@@ -450,6 +466,8 @@ class QuarkW4A4MXFP4(QuarkLinearScheme):
             _swizzle_asm_fp4_scale(layer.weight_scale.data),
             requires_grad=False,
         )
+        from aiter.ops.shuffle import shuffle_weight
+
         layer.weight = torch.nn.Parameter(
             shuffle_weight(layer.weight.data, layout=(16, 16)),
             requires_grad=False,
