@@ -11,7 +11,7 @@ from sglang.srt.arg_groups.model_override_base import (
 )
 from sglang.srt.environ import envs
 from sglang.srt.runtime_context import get_platform
-from sglang.srt.utils.common import is_gfx95_supported
+from sglang.srt.utils.common import is_gfx95_supported, is_gfx942_supported
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +45,12 @@ def _inkling_overrides(server_args: Any, hf_config: Any) -> dict:
         # ROCm decode: KV splits of 32 keys, up to 128 per request (swept on MI350X)
         if get_platform().is_hip:
             if (
-                not is_gfx95_supported()
+                not (is_gfx95_supported() or is_gfx942_supported())
                 and not envs.SGLANG_INKLING2_ALLOW_UNVALIDATED_ROCM.get()
             ):
                 raise ValueError(
-                    "Inkling2 on ROCm is validated on gfx950 (MI350X / MI355X) only; its "
-                    "kernels are sized and tuned there. Set "
+                    "Inkling2 on ROCm is validated on gfx950 (MI350X / MI355X) and "
+                    "gfx942 (MI300X / MI325X) only. Set "
                     "SGLANG_INKLING2_ALLOW_UNVALIDATED_ROCM=1 to run it anyway."
                 )
             if "megamoe" in (cfg.moe_a2a_backend, cfg.moe_runner_backend):

@@ -2188,7 +2188,8 @@ class Envs:
     # Inkling2 on ROCm keeps exact all-reduces; the image's quantized quick reduce
     # (ROCM_QUICK_REDUCE_QUANTIZATION) applies only with this set.
     SGLANG_INKLING2_ALLOW_QUICK_REDUCE = EnvBool(False)
-    # Inkling2 on ROCm is validated on gfx950 only; this lets other ROCm GPUs try it.
+    # Inkling2 on ROCm is validated on gfx950 and gfx942; this lets other ROCm GPUs
+    # try it.
     SGLANG_INKLING2_ALLOW_UNVALIDATED_ROCM = EnvBool(False)
     # EP MoE combine sums each rank's own top-k rows per token, then all-reduces
     # the FP32 token sums.
